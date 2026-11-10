@@ -1,0 +1,136 @@
+# AuthInjector import template.
+#
+#   cp keys.example.txt ~/aj-keys.txt && chmod 600 ~/aj-keys.txt
+#   $EDITOR ~/aj-keys.txt                 # replace every PASTE_... placeholder
+#   sudo authinjector import ~/aj-keys.txt
+#   sudo systemctl restart authinjector
+#   shred -u ~/aj-keys.txt
+#
+# Format:  service[/label]:key:callers[:rate]
+#          callers are comma separated; rate is calls per minute, optional.
+#
+# 🔴 RE-RUNNING THIS FILE IS SAFE. `import` skips any key already configured
+# and tells you which, so a second run does nothing at all. `import -f` replaces
+# them instead — that is the destructive one, and it will happily write a
+# PASTE_ placeholder over a working key, so only use it on a file you have
+# actually filled in. `authinjector add` refuses an existing label for the same
+# reason, and takes -f too.
+#
+# 🔴 THE FILLED-IN COPY IS A CREDENTIAL FILE. Keep it at mode 600, outside this
+# repo, and shred it after importing. `import` refuses nothing on your behalf:
+# it warns if the file is group- or world-readable, and it is all-or-nothing,
+# so a single bad line imports none of them.
+#
+# 🔴 WHY SOME LINES CARRY A LABEL AND OTHERS DO NOT. A service you hold ONE key
+# for is written bare and called as /service/... . A service you hold SEVERAL
+# keys for has every one of them labelled and NO default, so a caller that
+# forgets the label gets a 404 listing the labels rather than silently spending
+# the wrong account. Each label carries its own callers and its own rate limit.
+#
+# `callers` is set to `alice` throughout. Change it per line — that field is the
+# whole point of the broker. In particular cloudflare-rw below can destroy
+# infrastructure, so give it the narrowest caller list you can live with.
+
+# ── Research and data ───────────────────────────────────────────────────────
+# TAVILY_API_KEY_WORK
+tavily/work:PASTE_TAVILY_WORK_KEY:alice:20
+# TAVILY_API_KEY_PERSONAL
+tavily/personal:PASTE_TAVILY_PERSONAL_KEY:alice:20
+# TAVILY_API_KEY_CLIENT
+tavily/client:PASTE_TAVILY_CLIENT_KEY:alice:20
+
+# OUTSCRAPER_API_KEY
+outscraper:PASTE_OUTSCRAPER_KEY:alice:10
+# REALVALIDATION_API_KEY  — query-mode service, the key travels in the URL
+realvalidation:PASTE_REALVALIDATION_KEY:alice:20
+
+# ── Media ───────────────────────────────────────────────────────────────────
+# PEXELS_API_KEY  — already configured and working on this box, so a plain
+# import SKIPS this line. It is listed anyway so this file describes every key,
+# rather than every key except one. Only `import -f` would overwrite it, and
+# with a placeholder still in place that would break the one service that
+# currently works — so fill this in before you ever reach for -f.
+pexels:PASTE_PEXELS_KEY:alice:20
+
+# ELEVENLABS_API_KEY_1 / ELEVENLABS_API_KEY_2
+elevenlabs/key1:PASTE_ELEVENLABS_KEY_1:alice:10
+elevenlabs/key2:PASTE_ELEVENLABS_KEY_2:alice:10
+
+# ── Models ──────────────────────────────────────────────────────────────────
+# OPENAI_API_KEY
+openai:PASTE_OPENAI_KEY:alice:10
+
+# ── Google ──────────────────────────────────────────────────────────────────
+# GOOGLE_PLACES
+places:PASTE_GOOGLE_PLACES_KEY:alice:20
+# GOOGLE_GEO_API  — query-mode service, the key travels in the URL
+geocoding:PASTE_GOOGLE_GEO_KEY:alice:20
+# GOOGLE_PAGE_SPEED_API
+pagespeed:PASTE_GOOGLE_PAGESPEED_KEY:alice:20
+
+# ── Email and messaging ─────────────────────────────────────────────────────
+# RESEND_API_KEY_BLACKSQ_COM / RESEND_DEMO_API_KEY
+resend/blacksq:PASTE_RESEND_BLACKSQ_KEY:alice:10
+resend/demo:PASTE_RESEND_DEMO_KEY:alice:10
+
+# FACEBOOK_SYSTEM_USER_ACCESS_TOKEN
+facebook:PASTE_FACEBOOK_SYSTEM_USER_TOKEN:alice:10
+
+# VOIPMS_API_PASS  — query-mode service, the key travels in the URL.
+# voip.ms also needs api_username and an IP allowlist; the broker sends the
+# password only, so the username stays in the caller's own request.
+voipms:PASTE_VOIPMS_API_PASS:alice:10
+
+# ── Documents and signing ───────────────────────────────────────────────────
+# DOCUSEAL_API_KEY / DOCUSEAL_API_KEY_SANDBOX
+# Both labelled, so nothing reaches the live account by forgetting a word.
+docuseal/live:PASTE_DOCUSEAL_LIVE_KEY:alice:10
+docuseal/sandbox:PASTE_DOCUSEAL_SANDBOX_KEY:alice:10
+
+# VERDOCS_CLIENT_SECRET
+verdocs:PASTE_VERDOCS_CLIENT_SECRET:alice:10
+
+# ── Infrastructure ──────────────────────────────────────────────────────────
+# CLOUDFLARE_API_RO_TOKEN
+cloudflare:PASTE_CLOUDFLARE_RO_TOKEN:alice:30
+# CLOUDFLARE_API_RW_TOKEN
+#
+# 🔴 This one can delete workers, DNS and databases. It is a SEPARATE service
+# from the read-only token precisely so `callers` can differ. Narrow it.
+cloudflare-rw:PASTE_CLOUDFLARE_RW_TOKEN:alice:10
+
+# STRIPE_SENDBOX_SECRETKEY
+#
+# Labelled `sandbox` although it is the only Stripe key here: a bare /stripe/
+# would read as "the Stripe account", and this one is not it.
+stripe/sandbox:PASTE_STRIPE_SANDBOX_SECRET_KEY:alice:10
+
+# ── Deliberately absent ─────────────────────────────────────────────────────
+#
+# These were on your list. They are credentials, but not ones a header- or
+# query-injecting proxy can carry, so there is no line for them here and no
+# entry in the catalogue. Reasons in full at the foot of catalogue.toml.
+#
+#   CLOUDFLARE_R2_ACCESS_ID / CLOUDFLARE_R2_SECRET_KEY
+#       S3 SigV4 — the secret signs the request, there is no field to inject.
+#   DOCUSEAL_WEBHOOK_SECRET
+#       Verifies INBOUND webhooks; never travels outbound.
+#   GOOGLE_OAUTH_ID_BLACKSQ / GOOGLE_OAUTH_SECRET
+#       Browser redirect flow, not a proxied API call.
+#   STRIPE_SENDBOX_PUBLISHABLEKEY
+#       Publishable by design — ships in client code, not a secret.
+#   CLOUDFLARE_ACCOUNT_ID / CLIO_DEV_CLIENT_ID
+#       Identifiers, not credentials. Ordinary config.
+#   GOOGLE_BUSINESS_PROFILE
+#       Was here; removed after the live API answered 401 "Expected OAuth 2
+#       access token". Business Profile needs a short-lived OAuth token minted
+#       per request, which a static credential cannot be.
+#
+# One open question, not an omission:
+#
+#   VOIPMS_BEARER_TOKEN
+#       The catalogue models voip.ms as query auth (api_password) against
+#       /api/v1/rest.php, which is the documented REST API. A bearer token
+#       implies a different endpoint. Tell me which one it is for and it gets
+#       its own catalogue entry; guessing a base_url for a credential is the
+#       one thing the catalogue must never do.

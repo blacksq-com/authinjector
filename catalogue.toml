@@ -1,0 +1,454 @@
+# AuthInjector service catalogue.
+#
+# PUBLIC. Ships with the install, contains no secret and no permission --
+# only the mechanical knowledge of how to talk to each service, which is
+# identical for everyone who uses it.
+#
+#   authinjector list                what is here
+#   authinjector catalogue update    pull the latest
+#
+# Your keys and access rules live in /etc/authinjector/config.toml, which is
+# private and never leaves your machine. One service may hold SEVERAL keys,
+# labelled -- see that file.
+#
+# 🔴 base_url, auth_header and auth_param decide WHERE a credential is sent and
+# in which field. A tampered catalogue would redirect your keys while every
+# audit line still looked ordinary. Updates are signature-verified, and a
+# change to a service you already have configured is shown as a diff and waits
+# for you.
+#
+# auth_in = "header"  -> sent as `auth_header: <prefix><key>`
+# auth_in = "query"   -> appended as `?<auth_param>=<key>`
+#
+# 🔴 A QUERY-PARAM CREDENTIAL IS WEAKER AND IS MARKED AS SUCH. It travels in
+# the URL, so it reaches the upstream's access logs and any proxy in between.
+# We strip it from OUR audit log, but we cannot strip it from theirs. Prefer a
+# header whenever a service offers both.
+
+# ── Research and data ───────────────────────────────────────────────────────
+
+# ── Google, via a service account ───────────────────────────────────────────
+#
+# 🔴 THESE ARE NOT STATIC-KEY SERVICES. `auth_in = "google_sa"` means the key
+# this broker holds is a Google SERVICE-ACCOUNT JSON, and the broker signs an
+# assertion with it and injects the short-lived access token Google returns.
+# The caller never sees the private key and never sees the token. See
+# src/gtoken.rs for why this had to be a feature rather than a catalogue entry,
+# and the Business Profile note further down for how long it was not possible.
+#
+# The service account is granted access per-property INSIDE the Google product
+# -- for Search Console that is Settings → Users and permissions → Add user,
+# with its …iam.gserviceaccount.com address and "Restricted". Nothing is
+# granted by holding the key here.
+
+[services.gsc]
+name = "Google Search Console"
+base_url = "https://searchconsole.googleapis.com"
+auth_in = "google_sa"
+auth_scope = "https://www.googleapis.com/auth/webmasters.readonly"
+signup_url = "https://console.cloud.google.com/apis/library/searchconsole.googleapis.com"
+cost_per_call_cad = 0.0
+endpoints = [
+  # Search Analytics: clicks, impressions, position by page/query/date.
+  # 25,000 rows a request, paginated with startRow -- the reason to use the API
+  # at all rather than the 1,000-row console export.
+  { methods = ["POST"], path_prefix = "/webmasters/v3/sites/" },
+  # Which properties this service account can see.
+  { methods = ["GET"], path_prefix = "/webmasters/v3/sites" },
+  # URL Inspection: is a given URL indexed, and why not.
+  { methods = ["POST"], path_prefix = "/v1/urlInspection/index:inspect" },
+  { methods = ["GET"], path_prefix = "/v1/sites" },
+]
+
+[services.tavily]
+name = "Tavily"
+base_url = "https://api.tavily.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://tavily.com/"
+cost_per_call_cad = 0.008
+endpoints = [
+  { methods = ["POST"], path_prefix = "/search" },
+  { methods = ["POST"], path_prefix = "/extract" },
+]
+
+[services.outscraper]
+name = "Outscraper"
+base_url = "https://api.outscraper.cloud"
+auth_in = "header"
+auth_header = "X-API-KEY"
+signup_url = "https://outscraper.com/"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/maps/search" },
+  { methods = ["GET"], path_prefix = "/maps/reviews" },
+  { methods = ["GET"], path_prefix = "/profile" },
+]
+
+[services.realvalidation]
+name = "RealValidation (phone scrub)"
+base_url = "https://api.realvalidation.com"
+auth_in = "query"
+auth_param = "token"
+signup_url = "https://realvalidation.com/"
+# 🔴 THE TRAILING SLASH IS LOAD-BEARING. `/rpvWebService` without it answers
+# 301 to the canonical `/rpvWebService/` -- over **http**, with the query string
+# echoed into Location, credential included. We never follow redirects, and the
+# response headers are now scrubbed, so nothing leaked; requiring the slash here
+# means the bare form is refused by policy instead of producing that redirect at
+# all. The live endpoint is the Turbo PHP script beneath it.
+endpoints = [{ methods = ["GET"], path_prefix = "/rpvWebService/" }]
+
+# ── Media ───────────────────────────────────────────────────────────────────
+
+[services.pexels]
+name = "Pexels"
+base_url = "https://api.pexels.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = ""
+signup_url = "https://www.pexels.com/api/"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/v1/search" },
+  { methods = ["GET"], path_prefix = "/v1/curated" },
+  { methods = ["GET"], path_prefix = "/videos/search" },
+]
+
+[services.grok-imagine]
+name = "xAI Grok Imagine"
+base_url = "https://api.x.ai"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://console.x.ai/"
+# Video generation. Added 2026-10-01, after OpenAI retired the Videos API and
+# sora-2/sora-2-pro on 2026-09-24 with no replacement (they still show in
+# GET /v1/models, which is stale metadata, not capability).
+#
+# 🔴 VIDEO BILLS PER SECOND OF OUTPUT. From xAI's own models page:
+#     grok-imagine-video       $0.050 / sec   (classic)
+#     grok-imagine-video-1.5   $0.080 / sec   (adds 1080p, last_frame, keyframes)
+#     grok-imagine-image-2.0   $0.04  / image
+# `duration` accepts 1-15s, so a single careless call spans 5c to $1.20, and a
+# retry loop pays it again every pass. ONE short test render, look at it, then
+# the keeper. The CA$269 incident was a cheaper SKU than this.
+#
+# Defaults worth knowing: `resolution` defaults to 480p (1080p is v1.5 only)
+# and `generate_audio` defaults to TRUE — a muted hero loop does not want
+# audio, so pass false and stop paying to synthesise a soundtrack nobody hears.
+endpoints = [
+  # Free liveness check, same role /v1/models plays for openai: answers "is
+  # this key live" without generating anything.
+  { methods = ["GET"], path_prefix = "/v1/api-key" },
+  { methods = ["GET"], path_prefix = "/v1/models" },
+  { methods = ["POST"], path_prefix = "/v1/images/generations" },
+  { methods = ["POST"], path_prefix = "/v1/images/edits" },
+  # Video is async: POST /v1/videos/generations starts it, GET /v1/videos/{id}
+  # polls for status (pending|done|expired|failed) and the finished URL. One
+  # prefix covers both. Deliberately no DELETE.
+  { methods = ["GET", "POST"], path_prefix = "/v1/videos" },
+]
+
+[services.elevenlabs]
+name = "ElevenLabs"
+base_url = "https://api.elevenlabs.io"
+auth_in = "header"
+auth_header = "xi-api-key"
+signup_url = "https://elevenlabs.io/app/settings/api-keys"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/v1/user" },
+  { methods = ["GET"], path_prefix = "/v1/voices" },
+  { methods = ["POST"], path_prefix = "/v1/text-to-speech" },
+]
+
+# ── Models ──────────────────────────────────────────────────────────────────
+
+# DeepSeek is OpenAI-compatible on the wire — same Bearer header, same
+# /v1/chat/completions shape — which is why the entry below mirrors OpenAI's.
+# `/user/balance` is free and is the cheapest way to answer "is
+# this key live?", the same reason OpenAI's /v1/models is listed.
+[services.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://platform.deepseek.com/api_keys"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/models" },
+  { methods = ["GET"], path_prefix = "/user/balance" },
+  { methods = ["POST"], path_prefix = "/chat/completions" },
+  # The versioned aliases DeepSeek also answers on, so a caller written against
+  # an OpenAI SDK (which always prefixes /v1) works without a rewrite.
+  { methods = ["GET"], path_prefix = "/v1/models" },
+  { methods = ["POST"], path_prefix = "/v1/chat/completions" },
+]
+
+[services.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://platform.openai.com/api-keys"
+endpoints = [
+  # Free, and the cheapest way to answer "is this key live?" without spending
+  # anything. Worth having for exactly the diagnosis it was missing during.
+  { methods = ["GET"], path_prefix = "/v1/models" },
+  { methods = ["POST"], path_prefix = "/v1/chat/completions" },
+  { methods = ["POST"], path_prefix = "/v1/responses" },
+  { methods = ["POST"], path_prefix = "/v1/embeddings" },
+  # Image generation. Sync edits/generations draw one-off location plates and
+  # thumbnails; the Batch API renders a video's panels at half price. Batch needs the
+  # Files API both ways: reference images and the JSONL go up, the results come down.
+  # No DELETE anywhere, so a caller can add work but never remove the org's files.
+  { methods = ["POST"], path_prefix = "/v1/images" },
+  { methods = ["GET", "POST"], path_prefix = "/v1/files" },
+  { methods = ["GET", "POST"], path_prefix = "/v1/batches" },
+  # ── NO /v1/videos HERE, AND THAT IS CURRENT AS OF 2026-10-01. ────────────
+  # `sora-2` and `sora-2-pro` do still
+  # appear in GET /v1/models on this key, which makes it look available — but
+  # OpenAI's own deprecations page lists the Videos API, sora-2, sora-2-pro
+  # and every dated snapshot of them as SHUT DOWN on 2026-09-24, with no
+  # replacement named. The model listing is stale metadata, not capability.
+  # An entry was written here and then removed: there is no point widening the
+  # broker, let alone restarting it, for an endpoint OpenAI retired. If
+  # OpenAI ships a successor, add it then, with the cost noted — video bills
+  # per second of output and is the priciest SKU this key has ever reached.
+]
+
+# ── Google. Each key is scoped to its own API, so these are separate
+#    services even though they share a host and a parameter name. ────────────
+
+[services.places]
+name = "Google Places"
+base_url = "https://places.googleapis.com"
+auth_in = "header"
+auth_header = "X-Goog-Api-Key"
+signup_url = "https://console.cloud.google.com/apis/credentials"
+endpoints = [
+  { methods = ["POST"], path_prefix = "/v1/places:searchText" },
+  { methods = ["GET"], path_prefix = "/v1/places/" },
+]
+
+[services.geocoding]
+name = "Google Geocoding"
+base_url = "https://maps.googleapis.com"
+auth_in = "query"
+auth_param = "key"
+signup_url = "https://console.cloud.google.com/apis/credentials"
+endpoints = [{ methods = ["GET"], path_prefix = "/maps/api/geocode/json" }]
+
+[services.pagespeed]
+name = "Google PageSpeed Insights"
+base_url = "https://www.googleapis.com"
+auth_in = "header"
+auth_header = "X-Goog-Api-Key"
+signup_url = "https://developers.google.com/speed/docs/insights/v5/get-started"
+endpoints = [{ methods = ["GET"], path_prefix = "/pagespeedonline/v5/runPagespeed" }]
+
+# ── Email and messaging ─────────────────────────────────────────────────────
+
+[services.resend]
+name = "Resend"
+base_url = "https://api.resend.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://resend.com/api-keys"
+endpoints = [
+  { methods = ["POST"], path_prefix = "/emails" },
+  { methods = ["GET"], path_prefix = "/domains" },
+]
+
+[services.voipms]
+name = "voip.ms"
+base_url = "https://voip.ms"
+auth_in = "query"
+auth_param = "api_password"
+signup_url = "https://voip.ms/m/api.php"
+endpoints = [{ methods = ["GET"], path_prefix = "/api/v1/rest.php" }]
+
+[services.facebook]
+name = "Meta Graph"
+base_url = "https://graph.facebook.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://developers.facebook.com/"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/v21.0/" },
+  { methods = ["POST"], path_prefix = "/v21.0/" },
+]
+
+# ── Documents and signing ───────────────────────────────────────────────────
+
+[services.docuseal]
+name = "DocuSeal"
+base_url = "https://api.docuseal.com"
+auth_in = "header"
+auth_header = "X-Auth-Token"
+signup_url = "https://docuseal.com/"
+endpoints = [
+  { methods = ["GET", "POST"], path_prefix = "/templates" },
+  { methods = ["GET", "POST"], path_prefix = "/submissions" },
+]
+
+[services.verdocs]
+name = "Verdocs"
+base_url = "https://api.verdocs.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://verdocs.com/"
+endpoints = [{ methods = ["GET", "POST"], path_prefix = "/v2" }]
+
+# ── Infrastructure ──────────────────────────────────────────────────────────
+#
+# 🔴 THE READ-ONLY AND READ-WRITE CLOUDFLARE TOKENS ARE SEPARATE SERVICES ON
+# PURPOSE. They are the same API with very different consequences, and
+# `callers` is set per service -- so an agent can be given `cloudflare` and
+# never `cloudflare-rw`. Merging them would make that distinction unexpressible.
+
+[services.cloudflare]
+name = "Cloudflare API (read only)"
+base_url = "https://api.cloudflare.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://dash.cloudflare.com/profile/api-tokens"
+endpoints = [{ methods = ["GET"], path_prefix = "/client/v4/" }]
+
+[services.cloudflare-rw]
+name = "Cloudflare API (read write)"
+base_url = "https://api.cloudflare.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://dash.cloudflare.com/profile/api-tokens"
+endpoints = [
+  { methods = ["GET", "POST", "PUT", "PATCH", "DELETE"], path_prefix = "/client/v4/" },
+]
+
+# 🔴 GITHUB IS GET-ONLY, AND THAT IS THE POINT. The deploy pipelines start when
+# a human presses "Run workflow"; over the API that button is
+# `POST /repos/{o}/{r}/actions/workflows/{id}/dispatches`. An agent that could
+# POST here could press it, and the human gate would be a comment in a YAML
+# file. So this entry can only read -- run status, job logs, commit statuses --
+# and the token behind it should be a fine-grained one with Actions: Read-only
+# for the same reason: two locks, either of which holds alone.
+#
+# Scoped to the one organisation. Log downloads answer with a redirect to a
+# signed URL, which the forwarder hands back rather than follows.
+# The Black Squid demo host's own provisioning API (list / provision /
+# deprovision a demo). Not a third party: the credential is the `blacksq-demos`
+# Worker's PROVISION_TOKEN secret, sent as `x-provision-token`.
+#
+# 🔴 IT IS HERE BECAUSE NOBODY COULD PRODUCE IT. After the 2026-09-16 purge the
+# value lived only as a Worker secret, which Cloudflare never shows again, so
+# the site factory's `reconcile` could not run from anywhere. The factory's
+# tools/rotate-provision-token.sh mints a new one straight into the Worker and
+# into this broker without displaying it.
+#
+# Exactly the three endpoints the factory calls, each with the one method it
+# uses. `/api/demo/deprovision` does not begin with `/api/demo/provision`, so
+# the two POST prefixes do not overlap.
+# 🔴 WRITE ACCESS TO GITHUB, FOR DELIVERING SECRETS AND NOTHING ELSE. Separate
+# from `github` (read-only) for the same reason `cloudflare-rw` is separate:
+# `callers` is per service, so an agent can hold one and never the other.
+#
+# The two endpoints are exactly what an Actions secret needs — read the target's
+# public key, then PUT the sealed value (src/push.rs). It is scoped to the one
+# organisation, and a PUT anywhere but `/repos/Black-Squid/` is refused by policy
+# before it is a request.
+[services.github-rw]
+name = "GitHub API (secrets write)"
+base_url = "https://api.github.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://github.com/settings/personal-access-tokens/new"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/repos/Black-Squid/" },
+  { methods = ["PUT"], path_prefix = "/repos/Black-Squid/" },
+]
+
+[services.github]
+name = "GitHub API (read only)"
+base_url = "https://api.github.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://github.com/settings/personal-access-tokens/new"
+endpoints = [{ methods = ["GET"], path_prefix = "/repos/Black-Squid/" }]
+
+[services.stripe]
+name = "Stripe"
+base_url = "https://api.stripe.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://dashboard.stripe.com/apikeys"
+endpoints = [
+  { methods = ["GET"], path_prefix = "/v1/balance" },
+  { methods = ["GET", "POST"], path_prefix = "/v1/customers" },
+  { methods = ["GET", "POST"], path_prefix = "/v1/invoices" },
+]
+
+[services.clio]
+name = "Clio"
+base_url = "https://app.clio.com"
+auth_in = "header"
+auth_header = "Authorization"
+auth_prefix = "Bearer "
+signup_url = "https://app.clio.com/settings/developer_applications"
+endpoints = [{ methods = ["GET", "POST"], path_prefix = "/api/v4" }]
+
+# ── NOT IN THIS CATALOGUE, and why ──────────────────────────────────────────
+#
+# These are credentials, but not ones a header-or-query injecting proxy can
+# carry. Listing them here would promise a capability that does not exist.
+#
+#   CLOUDFLARE_R2_ACCESS_ID / _SECRET_KEY
+#       S3 SigV4. The secret is an input to a request SIGNATURE computed over
+#       method, path, headers and payload hash -- there is no field to inject
+#       it into. Brokering R2 needs the broker to sign, which is a different
+#       feature from injection.
+#
+#   DOCUSEAL_WEBHOOK_SECRET
+#       Verifies INCOMING webhooks. It never travels outbound, so there is
+#       nothing to proxy. It belongs in the receiving worker's own secrets.
+#
+#   GOOGLE_OAUTH_SECRET / GOOGLE_OAUTH_ID_BLACKSQ
+#       An OAuth client credential used in a browser redirect flow, exchanged
+#       at a token endpoint for a user's token. The broker could carry the
+#       token exchange, but the flow as a whole is not a proxied API call.
+#
+#   STRIPE_SENDBOX_PUBLISHABLEKEY
+#       Publishable by design -- it ships in client-side code and is not a
+#       secret.
+#
+#   CLOUDFLARE_ACCOUNT_ID, CLIO_DEV_CLIENT_ID
+#       Identifiers, not credentials. They belong in ordinary config.
+#
+#   GOOGLE_BUSINESS_PROFILE
+#       Removed after testing, not theorised. It was in this catalogue as a
+#       bearer-token service; the live API answered:
+#
+#         401 "Request had invalid authentication credentials.
+#              Expected OAuth 2 access token"
+#
+#       The Business Profile APIs take a short-lived OAuth 2 user token, minted
+#       per request from a refresh token. A static credential cannot satisfy
+#       them, so a catalogue entry here would promise something that can never
+#       work. Same category as GOOGLE_OAUTH_SECRET above. If GBP is needed, the
+#       broker would have to learn to mint tokens from a refresh token, which
+#       is a feature, not an entry.
+#
+#       🔴 THAT FEATURE NOW EXISTS (2026-10-05). `auth_in = "google_sa"` mints
+#       an access token from a held service-account key -- see [services.gsc]
+#       above and src/gtoken.rs. GBP is still not entered here, but only
+#       because nobody has needed it: the obstacle this note describes is gone,
+#       and a GBP entry is now an ordinary entry. GBP uses per-USER OAuth
+#       rather than a service account for most scopes, so check which grant
+#       the needed endpoint takes before adding one.

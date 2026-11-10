@@ -1,0 +1,36 @@
+# The socket is owned by systemd, not by the broker.
+#
+# 🔴 WHY SOCKET ACTIVATION. systemd creates the socket with the ownership and
+# mode below and hands the broker a ready file descriptor. The broker therefore
+# never needs write permission anywhere in /run, and the permission that decides
+# who may call is set by root in this file -- not by the process holding the
+# keys. A bug in the broker cannot widen its own access.
+#
+# Callers are members of `authinjector-clients`. They can connect. They cannot
+# read /etc/authinjector/env and cannot ptrace the broker, because the broker
+# runs as its own user (see authinjector.service). That separation is the whole
+# design: reachable, not readable.
+
+[Unit]
+Description=AuthInjector credential broker socket
+Documentation=file:/opt/authinjector/PROTOCOL.md
+
+[Socket]
+ListenStream=/run/authinjector/authinjector.sock
+
+# Owner is the broker's own user; group is the callers' group.
+SocketUser=authinjector
+SocketGroup=authinjector-clients
+# 0660: owner and group read/write, world nothing. A caller outside the group
+# gets connection refused -- Stage 5 test 4.
+SocketMode=0660
+
+# systemd creates and cleans up the parent directory.
+RuntimeDirectory=authinjector
+RuntimeDirectoryMode=0750
+
+# One connection at a time is not the goal; accept in the broker.
+Accept=no
+
+[Install]
+WantedBy=sockets.target

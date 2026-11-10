@@ -1,0 +1,37 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Runtime artefacts
+*.log
+*.sock
+
+# 🔴 No credential file belongs in this tree under any name. The broker reads
+# its keys from a root-owned EnvironmentFile supplied by systemd, never from
+# the repo. These patterns are a backstop, not the control -- the control is
+# that nothing here ever writes one.
+.env
+.env.*
+!.env.example
+secrets.json
+upstreams.local.json
+
+# 🔴 A FILLED-IN IMPORT FILE IS A CREDENTIAL FILE. keys.example.txt holds only
+# placeholders and is committed deliberately; every other key-shaped name here
+# is refused. The real control is that the working copy belongs outside this
+# tree at mode 600 and gets shredded after import -- this is the backstop.
+keys.txt
+aj-keys.txt
+*-keys.txt
+keys.*.txt
+!keys.example.txt
+
+# 🔴 EDITOR ARTEFACTS. A .swp / .swo holds the buffer contents of whatever is
+# open, so an editor sitting on a filled-in key file puts those bytes on disk
+# under a name nothing else was guarding. `git add -A` swept one of these in
+# once; these patterns are why it cannot happen again.
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo

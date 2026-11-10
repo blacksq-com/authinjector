@@ -1,0 +1,95 @@
+# The broker itself.
+#
+# 🔴 THIS FILE IS PART OF THE REVIEW. The Rust is signed off behaviourally
+# (Stage 5), but the isolation below is readable by anyone and is what makes
+# those tests pass rather than merely assert. Read this even if you read no
+# Rust.
+#
+# The three properties that matter, and the directives that produce them:
+#
+#   1. A caller cannot read the keys      -> User=authinjector + a root-owned
+#                                            EnvironmentFile mode 0640
+#   2. A caller cannot attach to the      -> separate uid; ProtectProc=invisible;
+#      process and read them from memory     SystemCallFilter=~@debug denies ptrace
+#   3. The broker cannot be widened by    -> the socket's mode is set by root in
+#      its own bug                           authinjector.socket, not here
+
+[Unit]
+Description=AuthInjector credential broker
+Documentation=file:/opt/authinjector/PROTOCOL.md
+Requires=authinjector.socket
+After=authinjector.socket network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=authinjector
+Group=authinjector
+
+# 🔴 NO EnvironmentFile. The broker opens the key file itself.
+#
+# EnvironmentFile= would put every credential into the process environment,
+# where it is also readable at /proc/PID/environ for the life of the process,
+# in a region zeroize cannot reach. Reading the file directly means key
+# material goes straight into a zeroizing Secret and never enters the
+# environment at all -- which is what makes the gcore test (Stage 5 test 3)
+# meaningful rather than theatre.
+#
+# The file stays root:authinjector 0640: this unit's User= can read it, and no
+# caller can. Rotating a key is: edit it as root, `systemctl restart
+# authinjector`. No caller changes anything -- Stage 5 test 6.
+#
+# Blank lines and lines beginning # or ; are ignored. Everything after the
+# first `=` is the value, so there are NO inline comments: `K=abc # note`
+# yields `abc # note`. Put comments on their own line.
+
+ExecStart=/usr/local/bin/authinjector serve \
+    --catalogue /usr/share/authinjector/catalogue.toml \
+    --config /etc/authinjector/config.toml
+Restart=on-failure
+RestartSec=2
+
+# ── Isolation ───────────────────────────────────────────────────────────────
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+
+# Outbound HTTPS and the Unix socket. Nothing else -- no raw sockets, no
+# netlink, no bluetooth.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# 🔴 Hide every other process, and deny the debug syscalls. Together these are
+# what "a caller cannot read the key out of the broker's memory" rests on, on
+# top of the uid separation.
+ProtectProc=invisible
+ProcSubset=pid
+SystemCallFilter=@system-service
+SystemCallFilter=~@debug @mount @swap @reboot @raw-io @obsolete
+SystemCallArchitectures=native
+
+# The audit log is the only thing it writes.
+LogsDirectory=authinjector
+LogsDirectoryMode=0750
+ReadWritePaths=/var/log/authinjector
+
+# Core dumps would contain key material by definition. The Stage 5 gcore test is
+# run deliberately, by hand, against a build with this relaxed -- never in
+# production.
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

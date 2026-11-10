@@ -1,0 +1,73 @@
+[package]
+name = "authinjector"
+version = "0.1.0"
+edition = "2021"
+description = "A broker that holds API credentials so the processes calling them never do."
+license-file = "LICENSE.md"
+publish = false
+
+[[bin]]
+name = "authinjector"
+path = "src/main.rs"
+
+[dependencies]
+# Socket listener. `net` for the Unix listener, `rt-multi-thread` because one
+# blocked upstream call must not stall every other caller on the box.
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util", "signal", "time"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server"] }
+http-body-util = "0.1"
+
+# Outbound. rustls, NOT OpenSSL (brief): no system TLS library to keep patched,
+# and no C dependency standing between us and a static binary.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Config + catalogue. TOML rather than YAML deliberately: serde_yaml is
+# archived and serde_yml now describes itself as unmaintained, and an
+# abandoned parser has no place in the path that decides where a credential
+# gets sent. `toml` is what Cargo itself uses.
+toml = "1"
+
+# 🔴 WRITES GO THROUGH toml_edit, NOT toml. The plain serializer discards
+# comments and reorders keys, so `authinjector add` would silently eat the
+# "# Keys for VOIP.MS" line above an entry. A config you are invited to read
+# and annotate must survive being edited by the tool. This is what `cargo add`
+# uses, for the same reason.
+toml_edit = "0.25"
+
+# 🔴 THE REASON THIS IS RUST. zeroize wipes key material on drop, and the
+# compiler will not optimise the write away. "The process wipes your key" has
+# to be literally true -- Stage 5 test 3 gcores the running process and greps
+# the dump for the key. A GC runtime cannot pass that test.
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# SO_PEERCRED via getsockopt. std::os::unix::net::UnixStream::peer_cred()
+# is still unstable (rust-lang#42839), so the kernel call is made directly.
+# Already in the tree transitively via tokio, so this costs no binary size.
+libc = "0.2"
+dryoc = { version = "1.0.0", default-features = false }
+base64 = "0.22"
+
+# 🔴 THE ONE THING A STATIC-CREDENTIAL BROKER CANNOT DO ITSELF. Google's APIs
+# take a short-lived OAuth2 token minted by RS256-signing a JWT with a service
+# account's private key; there is no header we can inject a stored string into.
+# See src/gtoken.rs. rustls/ring under the hood, so no OpenSSL and no C
+# dependency -- the same constraint that chose reqwest's TLS backend.
+# `use_pem` is NOT optional here: a Google service-account key is a PKCS#8 PEM
+# string inside the JSON, and without this feature only DER is accepted.
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+# Small, static, no runtime. Target is 3-5 MB (brief).
+[profile.release]
+opt-level = "z"     # size over speed; this proxies I/O, it is never CPU-bound
+lto = true
+codegen-units = 1
+panic = "abort"     # no unwinding: a panic must not run drop handlers halfway
+                    # and leave key material in a partially-wiped state
+strip = true

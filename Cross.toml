@@ -1,0 +1,13 @@
+# 🔴 PIN NEWER IMAGES. cross 0.2.5 (2022) ships images whose glibc predates
+# GLIBC_2.28, while Rust 1.98 build scripts require it -- so `libc`'s build
+# script cannot execute inside the container and the build dies before any of
+# our code compiles. The `:main` images are current and carry a newer glibc.
+#
+# This affects the BUILD container only. The binaries it produces are static
+# musl and depend on no glibc at all, which is the entire point.
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
+
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:main"
