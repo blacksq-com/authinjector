@@ -91,8 +91,8 @@ so they always list the services the broker actually knows:
 - Per-service reference: [`docs/services.md`](docs/services.md)
 
 A help-only MCP server (no keys, no API calls) answers questions about setup and
-every service: `https://mcp.authinjector.com/mcp` (Streamable HTTP), e.g.
-`claude mcp add --transport http authinjector-help https://mcp.authinjector.com/mcp`.
+every service: `https://authinjector.com/mcp` (Streamable HTTP), e.g.
+`claude mcp add --transport http authinjector-help https://authinjector.com/mcp`.
 It serves [`docs/help.json`](docs/help.json).
 
 ## Releases

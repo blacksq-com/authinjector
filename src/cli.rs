@@ -3,7 +3,7 @@
 //!
 //! 🔴 ONE SOURCE OF TRUTH: THE CATALOGUE. `help <service>`, the Claude skill,
 //! the Cursor rule, AGENTS.md, the Copilot instructions, docs/services.md and
-//! docs/help.json (which the help MCP at mcp.authinjector.com serves) are all
+//! docs/help.json (which the help MCP at authinjector.com/mcp serves) are all
 //! rendered here from the same `Catalogue`, so none of them can describe a
 //! service differently from the broker that serves it. CI regenerates them and
 //! fails on any diff.
@@ -22,7 +22,7 @@ use crate::catalogue::{AuthIn, Catalogue, ServiceDef};
 pub const DEFAULT_SOCKET: &str = "/run/authinjector/authinjector.sock";
 pub const REPO: &str = "https://github.com/blacksq-com/authinjector";
 pub const SITE: &str = "https://authinjector.com";
-pub const HELP_MCP: &str = "https://mcp.authinjector.com/mcp";
+pub const HELP_MCP: &str = "https://authinjector.com/mcp";
 pub const CATALOGUE_URL: &str = "https://raw.githubusercontent.com/blacksq-com/authinjector/main/catalogue.toml";
 
 // ── HTTP/1.1 over the Unix socket ────────────────────────────────────────────
@@ -407,7 +407,7 @@ const AGENT_RULES: &str = "1. Never ask the user for an API key, token or passwo
 3. Check what is available first: `authinjector status`.\n\
 4. Make every call through the broker: `authinjector call <service> <METHOD> <path> [--data ...]` (or curl over the socket). The broker adds the key; the response comes back unchanged.\n\
 5. On an error, tell the user the exact command from the troubleshooting list instead of asking for a key.\n\
-6. More help: `authinjector help`, `authinjector help <service>`, the help MCP at https://mcp.authinjector.com/mcp, and https://github.com/blacksq-com/authinjector.";
+6. More help: `authinjector help`, `authinjector help <service>`, the help MCP at https://authinjector.com/mcp, and https://github.com/blacksq-com/authinjector.";
 
 pub fn overview_text() -> String {
     format!(

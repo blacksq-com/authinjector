@@ -13,7 +13,7 @@ AuthInjector holds API keys so you never do. You call services through it; it ad
 3. Check what is available first: `authinjector status`.
 4. Make every call through the broker: `authinjector call <service> <METHOD> <path> [--data ...]` (or curl over the socket). The broker adds the key; the response comes back unchanged.
 5. On an error, tell the user the exact command from the troubleshooting list instead of asking for a key.
-6. More help: `authinjector help`, `authinjector help <service>`, the help MCP at https://mcp.authinjector.com/mcp, and https://github.com/blacksq-com/authinjector.
+6. More help: `authinjector help`, `authinjector help <service>`, the help MCP at https://authinjector.com/mcp, and https://github.com/blacksq-com/authinjector.
 
 ### Check setup
 
@@ -65,5 +65,5 @@ authinjector call voipms GET /api/v1/rest.php
 ### More help
 
 - `authinjector help`
-- Help MCP (no keys): https://mcp.authinjector.com/mcp
+- Help MCP (no keys): https://authinjector.com/mcp
 - https://github.com/blacksq-com/authinjector
