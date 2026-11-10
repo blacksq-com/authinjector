@@ -1,0 +1,583 @@
+{
+  "name": "AuthInjector",
+  "repo": "https://github.com/blacksq-com/authinjector",
+  "sections": {
+    "agent_rules": "1. Never ask the user for an API key, token or password, and never accept one pasted into the chat.\n2. Never read, print, grep or open `.env`, `.dev.vars` or any file holding a credential; never put a key in code, logs, commits or command arguments.\n3. Check what is available first: `authinjector status`.\n4. Make every call through the broker: `authinjector call <service> <METHOD> <path> [--data ...]` (or curl over the socket). The broker adds the key; the response comes back unchanged.\n5. On an error, tell the user the exact command from the troubleshooting list instead of asking for a key.\n6. More help: `authinjector help`, `authinjector help <service>`, the help MCP at https://mcp.authinjector.com/mcp, and https://github.com/blacksq-com/authinjector.",
+    "clients": "Help-only MCP server (no keys, no API calls, no user data): Streamable HTTP at https://mcp.authinjector.com/mcp.\n\n- Claude Code: `claude mcp add --transport http authinjector-help https://mcp.authinjector.com/mcp`\n- Claude.ai / Claude Desktop: Settings > Connectors > Add custom connector, URL `https://mcp.authinjector.com/mcp`\n- Cursor: `~/.cursor/mcp.json`: `{\"mcpServers\":{\"authinjector-help\":{\"url\":\"https://mcp.authinjector.com/mcp\"}}}`\n\nAgent instructions, generated from the catalogue:\n\n- Claude skill: copy `skills/authinjector/` into `~/.claude/skills/` (or a project's `.claude/skills/`) — https://github.com/blacksq-com/authinjector/blob/main/skills/authinjector/SKILL.md\n- Cursor rule: copy `.cursor/rules/authinjector.mdc` into your project — https://github.com/blacksq-com/authinjector/blob/main/.cursor/rules/authinjector.mdc\n- Codex, Cursor and others: add the AuthInjector section of AGENTS.md — https://github.com/blacksq-com/authinjector/blob/main/AGENTS.md\n- GitHub Copilot: `.github/copilot-instructions.md` — https://github.com/blacksq-com/authinjector/blob/main/.github/copilot-instructions.md\n",
+    "install": "Install the latest release (Linux, x86_64 or arm64):\n\n```bash\ncurl -fsSL https://authinjector.com/dl/$(uname -m) | tar xz\ncd authinjector-$(uname -m)-unknown-linux-musl\nsudo ./install.sh --caller \"$USER\"\n```\n\nEach release lists `SHA256SUMS.txt` (https://github.com/blacksq-com/authinjector/releases/latest); verify with `sha256sum -c SHA256SUMS.txt --ignore-missing`.\n\nBuild from source (static musl, needs Docker for `cross`):\n\n```bash\ngit clone https://github.com/blacksq-com/authinjector && cd authinjector\ncargo install cross\ncross build --release --target x86_64-unknown-linux-musl\nsudo ./install.sh --caller \"$USER\"\n```\n",
+    "overview": "AuthInjector is a local broker that holds API keys so AI agents and scripts never do. A caller sends plain HTTP to a Unix socket with no credential; the broker reads the caller's identity from the kernel (SO_PEERCRED), checks that caller's allowlist and rate limit for that key, injects the key, forwards the call and returns the upstream response unchanged. One audit line per call.\n\nPlatform: Linux only (SO_PEERCRED). Windows: run in WSL2. macOS: not supported yet.",
+    "setup": "Keys are added by the user, never by an agent, and never as an argument:\n\n```bash\nsudo authinjector add <service> -c <user> -r 20      # prompts for the key, echo off\nsudo authinjector add <service> -c <user> -l work    # a second key for the same service\nsudo systemctl restart authinjector\nauthinjector status                                 # what this user may call\nauthinjector help <service>                         # how to call one service\n```\n\nUpdate the service catalogue from the repo with `sudo authinjector catalogue update` (shows a diff; a change that would send a configured key to a new host or slot must be confirmed at a terminal).",
+    "troubleshooting": "- `no broker socket` / `connection refused`: the broker is not running, or the user is not in `authinjector-clients`. Tell the user: `systemctl status authinjector.socket`; `sudo usermod -aG authinjector-clients \"$USER\"` then log out and back in (or `sg authinjector-clients -c '...'`).\n- 403: the caller is not allowlisted for that key, method or path. Tell the user: `sudo authinjector add <service> -c <your-user>` (or add you to that key's callers / widen its endpoints in /etc/authinjector/config.toml), then `sudo systemctl restart authinjector`.\n- 404: unknown service or label. `authinjector status` lists what this caller may use; labelled keys are `<service>:<label>`.\n- 405: method not allowed on that path; `authinjector help <service>` lists the allowed ones.\n- 429: rate limited per caller and key. Wait, do not retry in a loop.\n- 502: the upstream could not be reached."
+  },
+  "services": [
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://app.clio.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/api/v4"
+        }
+      ],
+      "help": "### Clio (`clio`)\n\n- Base URL: https://app.clio.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://app.clio.com/settings/developer_applications\n- Allowed:\n  - GET, POST /api/v4\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call clio GET /api/v4\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/clio/api/v4'\n```\n\nA second key for the same service is addressed as `clio:<label>`, e.g. `authinjector call clio:work ...`.\n",
+      "id": "clio",
+      "name": "Clio",
+      "signup_url": "https://app.clio.com/settings/developer_applications"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.cloudflare.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/client/v4/"
+        }
+      ],
+      "help": "### Cloudflare API (read only) (`cloudflare`)\n\n- Base URL: https://api.cloudflare.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://dash.cloudflare.com/profile/api-tokens\n- Allowed:\n  - GET /client/v4/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call cloudflare GET /client/v4/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/cloudflare/client/v4/'\n```\n\nA second key for the same service is addressed as `cloudflare:<label>`, e.g. `authinjector call cloudflare:work ...`.\n",
+      "id": "cloudflare",
+      "name": "Cloudflare API (read only)",
+      "signup_url": "https://dash.cloudflare.com/profile/api-tokens"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.cloudflare.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ],
+          "path_prefix": "/client/v4/"
+        }
+      ],
+      "help": "### Cloudflare API (read write) (`cloudflare-rw`)\n\n- Base URL: https://api.cloudflare.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://dash.cloudflare.com/profile/api-tokens\n- Allowed:\n  - GET, POST, PUT, PATCH, DELETE /client/v4/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call cloudflare-rw GET /client/v4/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/cloudflare-rw/client/v4/'\n```\n\nA second key for the same service is addressed as `cloudflare-rw:<label>`, e.g. `authinjector call cloudflare-rw:work ...`.\n",
+      "id": "cloudflare-rw",
+      "name": "Cloudflare API (read write)",
+      "signup_url": "https://dash.cloudflare.com/profile/api-tokens"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.deepseek.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/models"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/user/balance"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/chat/completions"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/models"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/chat/completions"
+        }
+      ],
+      "help": "### DeepSeek (`deepseek`)\n\n- Base URL: https://api.deepseek.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://platform.deepseek.com/api_keys\n- Allowed:\n  - GET /models\n  - GET /user/balance\n  - POST /chat/completions\n  - GET /v1/models\n  - POST /v1/chat/completions\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call deepseek GET /models\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/deepseek/models'\n```\n\nA second key for the same service is addressed as `deepseek:<label>`, e.g. `authinjector call deepseek:work ...`.\n",
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "signup_url": "https://platform.deepseek.com/api_keys"
+    },
+    {
+      "auth": "header X-Auth-Token: <key>",
+      "base_url": "https://api.docuseal.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/templates"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/submissions"
+        }
+      ],
+      "help": "### DocuSeal (`docuseal`)\n\n- Base URL: https://api.docuseal.com\n- Key injected as: header X-Auth-Token: <key>\n- Get a key: https://docuseal.com/\n- Allowed:\n  - GET, POST /templates\n  - GET, POST /submissions\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call docuseal GET /templates\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/docuseal/templates'\n```\n\nA second key for the same service is addressed as `docuseal:<label>`, e.g. `authinjector call docuseal:work ...`.\n",
+      "id": "docuseal",
+      "name": "DocuSeal",
+      "signup_url": "https://docuseal.com/"
+    },
+    {
+      "auth": "header xi-api-key: <key>",
+      "base_url": "https://api.elevenlabs.io",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/user"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/voices"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/text-to-speech"
+        }
+      ],
+      "help": "### ElevenLabs (`elevenlabs`)\n\n- Base URL: https://api.elevenlabs.io\n- Key injected as: header xi-api-key: <key>\n- Get a key: https://elevenlabs.io/app/settings/api-keys\n- Allowed:\n  - GET /v1/user\n  - GET /v1/voices\n  - POST /v1/text-to-speech\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call elevenlabs GET /v1/user\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/elevenlabs/v1/user'\n```\n\nA second key for the same service is addressed as `elevenlabs:<label>`, e.g. `authinjector call elevenlabs:work ...`.\n",
+      "id": "elevenlabs",
+      "name": "ElevenLabs",
+      "signup_url": "https://elevenlabs.io/app/settings/api-keys"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://graph.facebook.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v21.0/"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v21.0/"
+        }
+      ],
+      "help": "### Meta Graph (`facebook`)\n\n- Base URL: https://graph.facebook.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://developers.facebook.com/\n- Allowed:\n  - GET /v21.0/\n  - POST /v21.0/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call facebook GET /v21.0/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/facebook/v21.0/'\n```\n\nA second key for the same service is addressed as `facebook:<label>`, e.g. `authinjector call facebook:work ...`.\n",
+      "id": "facebook",
+      "name": "Meta Graph",
+      "signup_url": "https://developers.facebook.com/"
+    },
+    {
+      "auth": "query ?key=<key>",
+      "base_url": "https://maps.googleapis.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/maps/api/geocode/json"
+        }
+      ],
+      "help": "### Google Geocoding (`geocoding`)\n\n- Base URL: https://maps.googleapis.com\n- Key injected as: query ?key=<key>\n- Get a key: https://console.cloud.google.com/apis/credentials\n- Allowed:\n  - GET /maps/api/geocode/json\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call geocoding GET /maps/api/geocode/json\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/geocoding/maps/api/geocode/json'\n```\n\nA second key for the same service is addressed as `geocoding:<label>`, e.g. `authinjector call geocoding:work ...`.\n",
+      "id": "geocoding",
+      "name": "Google Geocoding",
+      "signup_url": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.github.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/repos/Black-Squid/"
+        }
+      ],
+      "help": "### GitHub API (read only) (`github`)\n\n- Base URL: https://api.github.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://github.com/settings/personal-access-tokens/new\n- Allowed:\n  - GET /repos/Black-Squid/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call github GET /repos/Black-Squid/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/github/repos/Black-Squid/'\n```\n\nA second key for the same service is addressed as `github:<label>`, e.g. `authinjector call github:work ...`.\n",
+      "id": "github",
+      "name": "GitHub API (read only)",
+      "signup_url": "https://github.com/settings/personal-access-tokens/new"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.github.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/repos/Black-Squid/"
+        },
+        {
+          "methods": [
+            "PUT"
+          ],
+          "path_prefix": "/repos/Black-Squid/"
+        }
+      ],
+      "help": "### GitHub API (secrets write) (`github-rw`)\n\n- Base URL: https://api.github.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://github.com/settings/personal-access-tokens/new\n- Allowed:\n  - GET /repos/Black-Squid/\n  - PUT /repos/Black-Squid/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call github-rw GET /repos/Black-Squid/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/github-rw/repos/Black-Squid/'\n```\n\nA second key for the same service is addressed as `github-rw:<label>`, e.g. `authinjector call github-rw:work ...`.\n",
+      "id": "github-rw",
+      "name": "GitHub API (secrets write)",
+      "signup_url": "https://github.com/settings/personal-access-tokens/new"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.x.ai",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/api-key"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/models"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/images/generations"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/images/edits"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v1/videos"
+        }
+      ],
+      "help": "### xAI Grok Imagine (`grok-imagine`)\n\n- Base URL: https://api.x.ai\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://console.x.ai/\n- Allowed:\n  - GET /v1/api-key\n  - GET /v1/models\n  - POST /v1/images/generations\n  - POST /v1/images/edits\n  - GET, POST /v1/videos\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call grok-imagine GET /v1/api-key\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/grok-imagine/v1/api-key'\n```\n\nA second key for the same service is addressed as `grok-imagine:<label>`, e.g. `authinjector call grok-imagine:work ...`.\n",
+      "id": "grok-imagine",
+      "name": "xAI Grok Imagine",
+      "signup_url": "https://console.x.ai/"
+    },
+    {
+      "auth": "header Authorization: Bearer <minted Google access token> (service account, scope https://www.googleapis.com/auth/webmasters.readonly)",
+      "base_url": "https://searchconsole.googleapis.com",
+      "endpoints": [
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/webmasters/v3/sites/"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/webmasters/v3/sites"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/urlInspection/index:inspect"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/sites"
+        }
+      ],
+      "help": "### Google Search Console (`gsc`)\n\n- Base URL: https://searchconsole.googleapis.com\n- Key injected as: header Authorization: Bearer <minted Google access token> (service account, scope https://www.googleapis.com/auth/webmasters.readonly)\n- Get a key: https://console.cloud.google.com/apis/library/searchconsole.googleapis.com\n- Allowed:\n  - POST /webmasters/v3/sites/\n  - GET /webmasters/v3/sites\n  - POST /v1/urlInspection/index:inspect\n  - GET /v1/sites\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call gsc GET /webmasters/v3/sites\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/gsc/webmasters/v3/sites'\n```\n\nA second key for the same service is addressed as `gsc:<label>`, e.g. `authinjector call gsc:work ...`.\n",
+      "id": "gsc",
+      "name": "Google Search Console",
+      "signup_url": "https://console.cloud.google.com/apis/library/searchconsole.googleapis.com"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.openai.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/models"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/chat/completions"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/responses"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/embeddings"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/images"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v1/files"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v1/batches"
+        }
+      ],
+      "help": "### OpenAI (`openai`)\n\n- Base URL: https://api.openai.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://platform.openai.com/api-keys\n- Allowed:\n  - GET /v1/models\n  - POST /v1/chat/completions\n  - POST /v1/responses\n  - POST /v1/embeddings\n  - POST /v1/images\n  - GET, POST /v1/files\n  - GET, POST /v1/batches\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call openai GET /v1/models\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/openai/v1/models'\n```\n\nA second key for the same service is addressed as `openai:<label>`, e.g. `authinjector call openai:work ...`.\n",
+      "id": "openai",
+      "name": "OpenAI",
+      "signup_url": "https://platform.openai.com/api-keys"
+    },
+    {
+      "auth": "header X-API-KEY: <key>",
+      "base_url": "https://api.outscraper.cloud",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/maps/search"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/maps/reviews"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/profile"
+        }
+      ],
+      "help": "### Outscraper (`outscraper`)\n\n- Base URL: https://api.outscraper.cloud\n- Key injected as: header X-API-KEY: <key>\n- Get a key: https://outscraper.com/\n- Allowed:\n  - GET /maps/search\n  - GET /maps/reviews\n  - GET /profile\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call outscraper GET /maps/search\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/outscraper/maps/search'\n```\n\nA second key for the same service is addressed as `outscraper:<label>`, e.g. `authinjector call outscraper:work ...`.\n",
+      "id": "outscraper",
+      "name": "Outscraper",
+      "signup_url": "https://outscraper.com/"
+    },
+    {
+      "auth": "header X-Goog-Api-Key: <key>",
+      "base_url": "https://www.googleapis.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/pagespeedonline/v5/runPagespeed"
+        }
+      ],
+      "help": "### Google PageSpeed Insights (`pagespeed`)\n\n- Base URL: https://www.googleapis.com\n- Key injected as: header X-Goog-Api-Key: <key>\n- Get a key: https://developers.google.com/speed/docs/insights/v5/get-started\n- Allowed:\n  - GET /pagespeedonline/v5/runPagespeed\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call pagespeed GET /pagespeedonline/v5/runPagespeed\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/pagespeed/pagespeedonline/v5/runPagespeed'\n```\n\nA second key for the same service is addressed as `pagespeed:<label>`, e.g. `authinjector call pagespeed:work ...`.\n",
+      "id": "pagespeed",
+      "name": "Google PageSpeed Insights",
+      "signup_url": "https://developers.google.com/speed/docs/insights/v5/get-started"
+    },
+    {
+      "auth": "header Authorization: <key>",
+      "base_url": "https://api.pexels.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/search"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/curated"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/videos/search"
+        }
+      ],
+      "help": "### Pexels (`pexels`)\n\n- Base URL: https://api.pexels.com\n- Key injected as: header Authorization: <key>\n- Get a key: https://www.pexels.com/api/\n- Allowed:\n  - GET /v1/search\n  - GET /v1/curated\n  - GET /videos/search\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call pexels GET /v1/search\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/pexels/v1/search'\n```\n\nA second key for the same service is addressed as `pexels:<label>`, e.g. `authinjector call pexels:work ...`.\n",
+      "id": "pexels",
+      "name": "Pexels",
+      "signup_url": "https://www.pexels.com/api/"
+    },
+    {
+      "auth": "header X-Goog-Api-Key: <key>",
+      "base_url": "https://places.googleapis.com",
+      "endpoints": [
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/places:searchText"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/places/"
+        }
+      ],
+      "help": "### Google Places (`places`)\n\n- Base URL: https://places.googleapis.com\n- Key injected as: header X-Goog-Api-Key: <key>\n- Get a key: https://console.cloud.google.com/apis/credentials\n- Allowed:\n  - POST /v1/places:searchText\n  - GET /v1/places/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call places GET /v1/places/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/places/v1/places/'\n```\n\nA second key for the same service is addressed as `places:<label>`, e.g. `authinjector call places:work ...`.\n",
+      "id": "places",
+      "name": "Google Places",
+      "signup_url": "https://console.cloud.google.com/apis/credentials"
+    },
+    {
+      "auth": "query ?token=<key>",
+      "base_url": "https://api.realvalidation.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/rpvWebService/"
+        }
+      ],
+      "help": "### RealValidation (phone scrub) (`realvalidation`)\n\n- Base URL: https://api.realvalidation.com\n- Key injected as: query ?token=<key>\n- Get a key: https://realvalidation.com/\n- Allowed:\n  - GET /rpvWebService/\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call realvalidation GET /rpvWebService/\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/realvalidation/rpvWebService/'\n```\n\nA second key for the same service is addressed as `realvalidation:<label>`, e.g. `authinjector call realvalidation:work ...`.\n",
+      "id": "realvalidation",
+      "name": "RealValidation (phone scrub)",
+      "signup_url": "https://realvalidation.com/"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.resend.com",
+      "endpoints": [
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/emails"
+        },
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/domains"
+        }
+      ],
+      "help": "### Resend (`resend`)\n\n- Base URL: https://api.resend.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://resend.com/api-keys\n- Allowed:\n  - POST /emails\n  - GET /domains\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call resend GET /domains\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/resend/domains'\n```\n\nA second key for the same service is addressed as `resend:<label>`, e.g. `authinjector call resend:work ...`.\n",
+      "id": "resend",
+      "name": "Resend",
+      "signup_url": "https://resend.com/api-keys"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.stripe.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/v1/balance"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v1/customers"
+        },
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v1/invoices"
+        }
+      ],
+      "help": "### Stripe (`stripe`)\n\n- Base URL: https://api.stripe.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://dashboard.stripe.com/apikeys\n- Allowed:\n  - GET /v1/balance\n  - GET, POST /v1/customers\n  - GET, POST /v1/invoices\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call stripe GET /v1/balance\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/stripe/v1/balance'\n```\n\nA second key for the same service is addressed as `stripe:<label>`, e.g. `authinjector call stripe:work ...`.\n",
+      "id": "stripe",
+      "name": "Stripe",
+      "signup_url": "https://dashboard.stripe.com/apikeys"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.tavily.com",
+      "endpoints": [
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/search"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/extract"
+        }
+      ],
+      "help": "### Tavily (`tavily`)\n\n- Base URL: https://api.tavily.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://tavily.com/\n- Allowed:\n  - POST /search\n  - POST /extract\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call tavily POST /search --data '{}'\ncurl --unix-socket /run/authinjector/authinjector.sock -X POST 'http://localhost/tavily/search' -H 'content-type: application/json' -d '{}'\n```\n\nA second key for the same service is addressed as `tavily:<label>`, e.g. `authinjector call tavily:work ...`.\n",
+      "id": "tavily",
+      "name": "Tavily",
+      "signup_url": "https://tavily.com/"
+    },
+    {
+      "auth": "header Authorization: Bearer <key>",
+      "base_url": "https://api.verdocs.com",
+      "endpoints": [
+        {
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "path_prefix": "/v2"
+        }
+      ],
+      "help": "### Verdocs (`verdocs`)\n\n- Base URL: https://api.verdocs.com\n- Key injected as: header Authorization: Bearer <key>\n- Get a key: https://verdocs.com/\n- Allowed:\n  - GET, POST /v2\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call verdocs GET /v2\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/verdocs/v2'\n```\n\nA second key for the same service is addressed as `verdocs:<label>`, e.g. `authinjector call verdocs:work ...`.\n",
+      "id": "verdocs",
+      "name": "Verdocs",
+      "signup_url": "https://verdocs.com/"
+    },
+    {
+      "auth": "query ?api_password=<key>",
+      "base_url": "https://voip.ms",
+      "endpoints": [
+        {
+          "methods": [
+            "GET"
+          ],
+          "path_prefix": "/api/v1/rest.php"
+        }
+      ],
+      "help": "### voip.ms (`voipms`)\n\n- Base URL: https://voip.ms\n- Key injected as: query ?api_password=<key>\n- Get a key: https://voip.ms/m/api.php\n- Allowed:\n  - GET /api/v1/rest.php\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call voipms GET /api/v1/rest.php\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/voipms/api/v1/rest.php'\n```\n\nA second key for the same service is addressed as `voipms:<label>`, e.g. `authinjector call voipms:work ...`.\n",
+      "id": "voipms",
+      "name": "voip.ms",
+      "signup_url": "https://voip.ms/m/api.php"
+    }
+  ],
+  "site": "https://authinjector.com",
+  "version": "0.1.0"
+}

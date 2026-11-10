@@ -40,6 +40,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/authinjector" "dist/bin/${{ matrix.arch }}/"
           cp install.sh catalogue.toml keys.example.txt README.md PROTOCOL.md LICENSE.md "dist/$name/"
           cp systemd/authinjector.service systemd/authinjector.socket "dist/$name/systemd/"
+          cp -r skills docs "dist/$name/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4
         with:
@@ -58,17 +59,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: tarball-*
           merge-multiple: true
           path: dist
       - name: Checksums
-        run: cd dist && sha256sum *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+        # help.json (what the help MCP serves) and the catalogue ride along, so
+        # `authinjector catalogue update` and the docs can pin a release.
+        run: |
+          cp docs/help.json catalogue.toml dist/
+          cd dist && sha256sum *.tar.gz help.json catalogue.toml > SHA256SUMS.txt && cat SHA256SUMS.txt
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/*.tar.gz
+            dist/help.json
+            dist/catalogue.toml
             dist/SHA256SUMS.txt
           generate_release_notes: true
 

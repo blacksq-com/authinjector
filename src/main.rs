@@ -19,6 +19,7 @@
 
 mod audit;
 mod catalogue;
+mod cli;
 mod config;
 mod gtoken;
 mod importer;
@@ -30,6 +31,7 @@ mod ratelimit;
 mod secret;
 mod server;
 
+use std::collections::HashSet;
 use std::io::{BufRead, Read, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -41,6 +43,7 @@ use crate::secret::Secret;
 const DEFAULT_CATALOGUE: &str = "/usr/share/authinjector/catalogue.toml";
 const DEFAULT_CONFIG: &str = "/etc/authinjector/config.toml";
 const DEFAULT_AUDIT: &str = "/var/log/authinjector/audit.jsonl";
+const DEFAULT_SOCKET: &str = cli::DEFAULT_SOCKET;
 
 fn usage() -> String {
     format!(
@@ -59,10 +62,19 @@ fn usage() -> String {
          migrate                    move pre-label entries under `default`\n\
          serve                      run the broker (default)\n\
          \n\
+         status                     what this caller may use (asks the broker)\n\
+         help [service]             overview, or how to call one service\n\
+         call <service[:label]> <METHOD> <path> [--data JSON|@file|-] [-H 'Name: value']\n\
+         \u{20}                            one call through the broker; body to stdout\n\
+         catalogue update [--yes] [--from <https url>]\n\
+         \u{20}                            fetch the catalogue from the repo, show the diff\n\
+         gen-docs [--out <dir>]     regenerate the skill, rules and docs from the catalogue\n\
+         \n\
          --catalogue <path>         default: {DEFAULT_CATALOGUE}\n\
          --config <path>            default: {DEFAULT_CONFIG}\n\
          --audit <path>             default: {DEFAULT_AUDIT}\n\
-         --socket <path>            bind here when not socket-activated\n\
+         --socket <path>            bind here when not socket-activated; status and\n\
+         \u{20}                            call connect here (default {DEFAULT_SOCKET})\n\
          --check                    validate and exit without serving\n\
          -f, --force                replace a key that is already configured\n\
          \n\
@@ -92,6 +104,11 @@ struct Opts {
     positional: Vec<String>,
     push_default: bool,
     push_mode: &'static str,
+    data: Option<String>,
+    headers: Vec<String>,
+    yes: bool,
+    from: Option<String>,
+    out: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<(String, Opts), String> {
@@ -108,6 +125,11 @@ fn parse_args() -> Result<(String, Opts), String> {
         positional: Vec::new(),
         push_default: false,
         push_mode: "to",
+        data: None,
+        headers: Vec::new(),
+        yes: false,
+        from: None,
+        out: None,
     };
     let mut it = std::env::args().skip(1);
     let mut cmd = String::new();
@@ -138,6 +160,11 @@ fn parse_args() -> Result<(String, Opts), String> {
             }
             "-h" | "--help" => return Err(usage()),
             "--default" => o.push_default = true,
+            "--data" | "-d" => o.data = Some(it.next().ok_or("--data needs JSON, @file or -")?),
+            "-H" | "--header" => o.headers.push(it.next().ok_or("-H needs 'Name: value'")?),
+            "--yes" | "-y" => o.yes = true,
+            "--from" => o.from = Some(it.next().ok_or("--from needs an https URL")?),
+            "--out" => o.out = Some(PathBuf::from(it.next().ok_or("--out needs a directory")?)),
             "--allow" => o.push_mode = "allow",
             "--deny" => o.push_mode = "deny",
             other if other.starts_with('-') => return Err(format!("unknown option {other:?}\n\n{}", usage())),
@@ -906,6 +933,287 @@ fn cmd_migrate(o: &Opts) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+// ── agent commands: help, status, call, catalogue, gen-docs ─────────────────
+
+fn socket_of(o: &Opts) -> PathBuf {
+    o.socket.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_SOCKET))
+}
+
+fn cmd_help(o: &Opts) -> ExitCode {
+    let Some(id) = o.positional.first() else {
+        print!("{}", cli::overview_text());
+        return ExitCode::SUCCESS;
+    };
+    let id = id.split(':').next().unwrap_or(id);
+    let cat = match catalogue::Catalogue::load(&o.catalogue) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("authinjector: {e}");
+            return ExitCode::from(78);
+        }
+    };
+    match cat.get(id) {
+        Some(s) => {
+            print!("{}", cli::service_help(id, s));
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("authinjector: no service {id:?} in the catalogue. `authinjector list` shows them all.");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn cmd_status(o: &Opts) -> ExitCode {
+    let sock = socket_of(o);
+    let resp = match cli::request(&sock, &cli::build_request("GET", "/_broker/health", &[], b"")) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("authinjector: {e}");
+            return ExitCode::from(69);
+        }
+    };
+    if resp.status != 200 {
+        eprintln!("authinjector: the broker answered {} {}", resp.status, resp.reason);
+        return ExitCode::FAILURE;
+    }
+    let v: serde_json::Value = match serde_json::from_slice(&resp.body) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("authinjector: unreadable health answer: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "caller: {}", v["caller"].as_str().unwrap_or("?"));
+    let ups = v["upstreams"].as_array().cloned().unwrap_or_default();
+    if ups.is_empty() {
+        let _ = writeln!(out, "\nThis caller may use no service yet. Ask the user to run:\n  sudo authinjector add <service> -c <your-user>");
+        let _ = std::io::stdout().write_all(out.as_bytes());
+        return ExitCode::SUCCESS;
+    }
+    let _ = writeln!(out);
+    for u in ups {
+        let _ = writeln!(out, "{}  ({}/min)", u["id"].as_str().unwrap_or("?"), u["rate_per_minute"]);
+        for a in u["allow"].as_array().cloned().unwrap_or_default() {
+            let methods: Vec<String> = a["methods"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|m| m.as_str().map(String::from))
+                .collect();
+            let _ = writeln!(out, "    {:<24} {}", methods.join(","), a["path_prefix"].as_str().unwrap_or(""));
+        }
+    }
+    let _ = writeln!(out, "\n  authinjector help <service>   how to call one of them");
+    let _ = std::io::stdout().write_all(out.as_bytes());
+    ExitCode::SUCCESS
+}
+
+fn cmd_call(o: &Opts) -> ExitCode {
+    let (svc, method, path) = match o.positional.as_slice() {
+        [a, b, c] => (a.as_str(), b.to_ascii_uppercase(), c.as_str()),
+        _ => {
+            eprintln!("usage: authinjector call <service[:label]> <METHOD> <path> [--data JSON|@file|-] [-H 'Name: value']");
+            return ExitCode::from(2);
+        }
+    };
+    if method.is_empty() || !method.bytes().all(|b| b.is_ascii_uppercase()) {
+        eprintln!("authinjector: {method:?} is not an HTTP method");
+        return ExitCode::from(2);
+    }
+    if !path.starts_with('/') || path.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control()) {
+        eprintln!("authinjector: the path must start with / and contain no spaces, e.g. /v1/search?query=x");
+        return ExitCode::from(2);
+    }
+    if svc.is_empty() || !svc.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b':') {
+        eprintln!("authinjector: {svc:?} is not a service id (service or service:label)");
+        return ExitCode::from(2);
+    }
+    let mut headers = Vec::new();
+    for h in &o.headers {
+        match cli::check_header(h) {
+            Ok(kv) => headers.push(kv),
+            Err(e) => {
+                eprintln!("authinjector: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let body: Vec<u8> = match o.data.as_deref() {
+        None => Vec::new(),
+        Some("-") => {
+            let mut b = Vec::new();
+            if let Err(e) = std::io::stdin().read_to_end(&mut b) {
+                eprintln!("authinjector: reading stdin: {e}");
+                return ExitCode::FAILURE;
+            }
+            b
+        }
+        Some(d) if d.starts_with('@') => match std::fs::read(&d[1..]) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("authinjector: {}: {e}", &d[1..]);
+                return ExitCode::FAILURE;
+            }
+        },
+        Some(d) => d.as_bytes().to_vec(),
+    };
+    if !body.is_empty() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+        headers.push(("Content-Type".into(), "application/json".into()));
+    }
+    let raw = cli::build_request(&method, &format!("/{svc}{path}"), &headers, &body);
+    let resp = match cli::request(&socket_of(o), &raw) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("authinjector: {e}");
+            return ExitCode::from(69);
+        }
+    };
+    let _ = std::io::stdout().write_all(&resp.body);
+    let _ = std::io::stdout().flush();
+    eprintln!("\nHTTP {} {}", resp.status, resp.reason);
+    if resp.status >= 400 {
+        if let Some(h) = cli::status_hint(resp.status, svc) {
+            eprintln!("{h}");
+        }
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
+async fn fetch_text(url: &str) -> Result<String, String> {
+    let r = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !r.status().is_success() {
+        return Err(format!("{url} answered {}", r.status()));
+    }
+    r.text().await.map_err(|e| e.to_string())
+}
+
+async fn cmd_catalogue(o: &Opts) -> ExitCode {
+    if o.positional.first().map(String::as_str) != Some("update") {
+        eprintln!("usage: authinjector catalogue update [--yes] [--from <https url>]");
+        return ExitCode::from(2);
+    }
+    let url = o.from.clone().unwrap_or_else(|| cli::CATALOGUE_URL.to_string());
+    if !url.starts_with("https://") {
+        eprintln!("authinjector: the catalogue decides where keys are sent; it is only fetched over https");
+        return ExitCode::from(2);
+    }
+    let text = match fetch_text(&url).await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("authinjector: fetching the catalogue: {e}");
+            return ExitCode::from(69);
+        }
+    };
+    let new = match catalogue::Catalogue::parse(&text) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("authinjector: the fetched catalogue is not valid, nothing changed: {e}");
+            return ExitCode::from(65);
+        }
+    };
+    let old = catalogue::Catalogue::load(&o.catalogue).unwrap_or_default();
+    let d = cli::diff(&old, &new);
+    if d.is_empty() {
+        println!("The installed catalogue is already current ({} services).", new.services.len());
+        return ExitCode::SUCCESS;
+    }
+    println!("Changes from {url}:");
+    for id in &d.added {
+        println!("  + {id}");
+    }
+    for id in &d.removed {
+        println!("  - {id}");
+    }
+    for c in &d.changed {
+        println!("  ~ {}  ({})", c.id, c.fields.join(", "));
+    }
+    // Which services hold a key here. An unreadable config (not root) counts
+    // every changed service as configured: the safe reading.
+    let configured: HashSet<String> = match config::Settings::load(&o.config) {
+        Ok(s) => s.services.keys().cloned().collect(),
+        Err(_) => d.changed.iter().map(|c| c.id.clone()).collect(),
+    };
+    let human = d.needs_human(&configured);
+    if !human.is_empty() {
+        println!("\n  These changes would send a configured key to a different host or slot:");
+        for c in &human {
+            let show = |s: Option<&catalogue::ServiceDef>| s.map(|s| format!("{} [{}]", s.base_url, cli::auth_text(s))).unwrap_or_default();
+            println!("     {}: {} -> {}", c.id, show(old.get(&c.id)), show(new.get(&c.id)));
+        }
+        println!("  They must be confirmed by a person at a terminal; --yes does not cover them.");
+    }
+    if !o.yes || !human.is_empty() {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("authinjector: confirmation needed and stdin is not a terminal; nothing changed");
+            return ExitCode::from(1);
+        }
+        print!("\nApply to {}? [y/N] ", o.catalogue.display());
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+        if !matches!(line.trim(), "y" | "Y" | "yes") {
+            println!("Nothing changed.");
+            return ExitCode::SUCCESS;
+        }
+    }
+    let tmp = o.catalogue.with_extension("toml.new");
+    let write = || -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&tmp, &text)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644))?;
+        std::fs::rename(&tmp, &o.catalogue)
+    };
+    if let Err(e) = write() {
+        let _ = std::fs::remove_file(&tmp);
+        eprintln!("authinjector: writing {}: {e} (run it with sudo)", o.catalogue.display());
+        return ExitCode::from(73);
+    }
+    println!("Updated {}. Restart the broker to use it:\n  sudo systemctl restart authinjector", o.catalogue.display());
+    ExitCode::SUCCESS
+}
+
+fn cmd_gen_docs(o: &Opts) -> ExitCode {
+    // From the repo's own catalogue when run in a checkout, which is what CI does.
+    let path = if o.catalogue == Path::new(DEFAULT_CATALOGUE) && Path::new("catalogue.toml").exists() {
+        PathBuf::from("catalogue.toml")
+    } else {
+        o.catalogue.clone()
+    };
+    let cat = match catalogue::Catalogue::load(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("authinjector: {e}");
+            return ExitCode::from(78);
+        }
+    };
+    let out = o.out.clone().unwrap_or_else(|| PathBuf::from("."));
+    match cli::write_all(&cat, &out) {
+        Ok(files) => {
+            for f in files {
+                println!("wrote {}", out.join(f).display());
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("authinjector: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 // ── serve ───────────────────────────────────────────────────────────────────
 
 async fn cmd_serve(o: &Opts) -> ExitCode {
@@ -993,6 +1301,11 @@ async fn main() -> ExitCode {
         "import" => cmd_import(&opts),
         "migrate" => cmd_migrate(&opts),
         "serve" => cmd_serve(&opts).await,
+        "help" => cmd_help(&opts),
+        "status" => cmd_status(&opts),
+        "call" => cmd_call(&opts),
+        "catalogue" | "catalog" => cmd_catalogue(&opts).await,
+        "gen-docs" => cmd_gen_docs(&opts),
         other => {
             eprintln!("unknown command {other:?}\n\n{}", usage());
             ExitCode::from(2)

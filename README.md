@@ -79,6 +79,22 @@ The socket is created `0660`, so members of `authinjector-clients` on the host
 can connect. Running `install.sh` once on the host sets up the users, groups and
 config the container expects.
 
+## Use it from your AI tools
+
+Agent instructions are generated from the catalogue (`authinjector gen-docs`),
+so they always list the services the broker actually knows:
+
+- Claude skill: [`skills/authinjector/SKILL.md`](skills/authinjector/SKILL.md), copy the folder into `~/.claude/skills/`
+- Cursor rule: [`.cursor/rules/authinjector.mdc`](.cursor/rules/authinjector.mdc)
+- Codex, Cursor and others: [`AGENTS.md`](AGENTS.md)
+- GitHub Copilot: [`.github/copilot-instructions.md`](.github/copilot-instructions.md)
+- Per-service reference: [`docs/services.md`](docs/services.md)
+
+A help-only MCP server (no keys, no API calls) answers questions about setup and
+every service: `https://mcp.authinjector.com/mcp` (Streamable HTTP), e.g.
+`claude mcp add --transport http authinjector-help https://mcp.authinjector.com/mcp`.
+It serves [`docs/help.json`](docs/help.json).
+
 ## Releases
 
 Tagging a version (`git tag v0.2.0 && git push origin v0.2.0`) runs
@@ -428,7 +444,29 @@ authinjector push-to <service>[:<label>] <dest>...   where that key may be deliv
 authinjector import <file> [-f]            service[/label]:key:callers[:rate]
 authinjector migrate                       move pre-label entries under `default`
 authinjector serve [--check]
+
+authinjector status                        what this caller may use (asks the broker)
+authinjector help [service]                overview, or how to call one service
+authinjector call <service[:label]> <METHOD> <path> [--data JSON|@file|-] [-H 'Name: value']
+authinjector catalogue update [--yes] [--from <https url>]
+authinjector gen-docs [--out <dir>]        regenerate skill, rules and docs from the catalogue
 ```
+
+**For agents: `status`, `help`, `call`.** `call` is plain HTTP/1.1 over the
+socket; it prints the upstream body unchanged to stdout and the status line to
+stderr, and exits non-zero on 4xx/5xx with what to tell the user (403: allow
+this caller with `sudo authinjector add <service> -c <you>`; 404: unknown
+service or label; 429: wait). It refuses `Authorization`, `Cookie` and
+`Proxy-Authorization` outright: the caller never sends a credential. When the
+socket cannot be reached, both commands say whether the broker is not running
+or the caller is not in `authinjector-clients`, with the commands to fix it.
+
+**`catalogue update`** fetches `catalogue.toml` from this repository's `main`
+over HTTPS (redirects not followed), validates it with the same loader the
+broker uses, and prints what was added, removed and changed. A change to
+`base_url` or to where the key goes, on a service that has a configured key,
+must be confirmed by a person at a terminal; `--yes` does not cover it. The
+file is written atomically, then restart the broker.
 
 **A key never arrives as an argument.** `argv` is readable at
 `/proc/PID/cmdline` by every user on the box while the command runs, and lands
@@ -481,11 +519,14 @@ containing a byte no HTTP header may carry, and a key with leading or trailing
 whitespace. Fail loudly, once, while someone can still act on it — not as a 502
 per request that points at the network.
 
-**Not yet built, and both belong before `catalogue update` fetches anything:**
-the catalogue decides `base_url` and which field takes the key, so a tampered
-one would redirect credentials while every audit line looked ordinary. An
-update must be signature-verified, and must show a diff and wait for a human
-for any service already configured.
+**`catalogue update` and what still is not built.** The catalogue decides
+`base_url` and which field takes the key, so a tampered one would redirect
+credentials while every audit line looked ordinary. What exists: the update is
+fetched over HTTPS from GitHub, redirects are refused, the result is validated,
+the diff is shown, and any change that would move a configured key to a new
+host or slot waits for a human at a terminal. What does not: signatures. The
+fetched file is trusted as far as GitHub and this repository are; signing the
+catalogue is still to be built.
 
 ---
 
