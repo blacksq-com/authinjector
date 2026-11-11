@@ -1,9 +1,9 @@
 [package]
 name = "authinjector"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A broker that holds API credentials so the processes calling them never do."
-license-file = "LICENSE.md"
+license = "Elastic-2.0"
 publish = false
 
 [[bin]]

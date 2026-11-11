@@ -2,7 +2,7 @@
 
 **The broker that holds your API keys so your agents never do.**
 
-[Website](https://authinjector.com) · Built by [Black Squid](https://blacksq.com) · License: [FSL-1.1-ALv2](LICENSE.md)
+[Website](https://authinjector.com) · Built by [Black Squid](https://blacksq.com) · License: [Elastic License 2.0](LICENSE.md)
 
 An AI coding agent that can run commands can print any credential in its reach.
 Blocklists of risky commands keep failing, because the ways to print an
@@ -105,12 +105,14 @@ pull request.
 
 ## License
 
-AuthInjector is source-available under the Functional Source License,
-Version 1.1, with the Apache 2.0 future license (FSL-1.1-ALv2). You may use,
-copy, modify and redistribute it for any purpose except a competing use, that
-is, offering it as a product or service that competes with it. Each release
-becomes available under the Apache License 2.0 two years after it is
-published. See [LICENSE.md](LICENSE.md) for the full terms.
+AuthInjector is source-available under the Elastic License 2.0 (ELv2).
+You may read, use, copy, modify and redistribute it. You may not provide it to
+others as a hosted or managed service, and you may not remove or get around any
+licence key functionality or licensing notices. AuthInjector is not open source
+and does not convert to an open source licence. See [LICENSE.md](LICENSE.md) for
+the full terms.
+
+Copyright 2026 Velesco Inc. o/a Black Squid.
 
 ---
 
