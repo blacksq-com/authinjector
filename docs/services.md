@@ -103,6 +103,7 @@ A second key for the same service is addressed as `docuseal:<label>`, e.g. `auth
   - GET /v1/user
   - GET /v1/voices
   - POST /v1/text-to-speech
+  - POST /v1/sound-generation
 
 Call it (the broker adds the key):
 

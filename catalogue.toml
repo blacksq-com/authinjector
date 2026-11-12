@@ -159,6 +159,8 @@ endpoints = [
   { methods = ["GET"], path_prefix = "/v1/user" },
   { methods = ["GET"], path_prefix = "/v1/voices" },
   { methods = ["POST"], path_prefix = "/v1/text-to-speech" },
+  # Sound effects from a text description (a winch, a splash, a grunt). Same key, same billing.
+  { methods = ["POST"], path_prefix = "/v1/sound-generation" },
 ]
 
 # ── Models ──────────────────────────────────────────────────────────────────

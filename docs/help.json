@@ -148,9 +148,15 @@
             "POST"
           ],
           "path_prefix": "/v1/text-to-speech"
+        },
+        {
+          "methods": [
+            "POST"
+          ],
+          "path_prefix": "/v1/sound-generation"
         }
       ],
-      "help": "### ElevenLabs (`elevenlabs`)\n\n- Base URL: https://api.elevenlabs.io\n- Key injected as: header xi-api-key: <key>\n- Get a key: https://elevenlabs.io/app/settings/api-keys\n- Allowed:\n  - GET /v1/user\n  - GET /v1/voices\n  - POST /v1/text-to-speech\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call elevenlabs GET /v1/user\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/elevenlabs/v1/user'\n```\n\nA second key for the same service is addressed as `elevenlabs:<label>`, e.g. `authinjector call elevenlabs:work ...`.\n",
+      "help": "### ElevenLabs (`elevenlabs`)\n\n- Base URL: https://api.elevenlabs.io\n- Key injected as: header xi-api-key: <key>\n- Get a key: https://elevenlabs.io/app/settings/api-keys\n- Allowed:\n  - GET /v1/user\n  - GET /v1/voices\n  - POST /v1/text-to-speech\n  - POST /v1/sound-generation\n\nCall it (the broker adds the key):\n\n```bash\nauthinjector call elevenlabs GET /v1/user\ncurl --unix-socket /run/authinjector/authinjector.sock 'http://localhost/elevenlabs/v1/user'\n```\n\nA second key for the same service is addressed as `elevenlabs:<label>`, e.g. `authinjector call elevenlabs:work ...`.\n",
       "id": "elevenlabs",
       "name": "ElevenLabs",
       "signup_url": "https://elevenlabs.io/app/settings/api-keys"
